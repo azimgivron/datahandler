@@ -4,13 +4,15 @@ disease–disease (DxD) matrices from OMIM, HumanNet, and MeSH hierarchy data,
 and exporting both sparse NPZ and labeled CSV representations.
 """
 
-import logging
 import json
+import logging
+from collections import defaultdict
+
 import numpy as np
 import pandas as pd
-from collections import defaultdict
 from scipy.sparse import coo_matrix, csr_matrix, save_npz
 from sklearn.metrics.pairwise import cosine_similarity
+
 
 # --- Data Loaders ---
 def load_gene_disease_associations(associations_file: str):
@@ -66,9 +68,13 @@ def construct_gene_disease_matrix(associations_file: str, out_npz: str):
             data.append(1)
             seen.add((i, j))
 
-    mat = coo_matrix((data, (rows, cols)), shape=(len(genes), len(diseases)), dtype=int).tocsr()
+    mat = coo_matrix(
+        (data, (rows, cols)), shape=(len(genes), len(diseases)), dtype=int
+    ).tocsr()
     save_npz(out_npz, mat)
-    logging.info("G×D NPZ saved: %dx%d nnz=%d → %s", mat.shape[0], mat.shape[1], mat.nnz, out_npz)
+    logging.info(
+        "G×D NPZ saved: %dx%d nnz=%d → %s", mat.shape[0], mat.shape[1], mat.nnz, out_npz
+    )
 
     # export labeled CSV
     df = pd.DataFrame.sparse.from_spmatrix(mat, index=genes, columns=diseases)
@@ -102,14 +108,22 @@ def construct_gene_gene_matrix(network_file: str, out_npz: str, genes):
             parts = raw_line.strip().split()
             if len(parts) < 3:
                 continue
-            g1, g2, w = parts[0], parts[1], float(parts[2])
+            g1, g2, w = (
+                parts[0],
+                parts[1],
+                float(parts[2]) if parts[2] != "NA" else np.nan,
+            )
             if g1 in idx_g and g2 in idx_g:
                 i, j = idx_g[g1], idx_g[g2]
-                rows.append(i); cols.append(j); data.append(w)
+                rows.append(i)
+                cols.append(j)
+                data.append(w)
 
     # add self-similarity =1
     for i in range(G):
-        rows.append(i); cols.append(i); data.append(1.0)
+        rows.append(i)
+        cols.append(i)
+        data.append(1.0)
 
     mat = coo_matrix((data, (rows, cols)), shape=(G, G), dtype=np.float32).tocsr()
     save_npz(out_npz, mat)
@@ -179,19 +193,19 @@ def construct_disease_disease_matrix(
     Returns:
       diseases: passed through for consistency
     """
-    records   = load_omim_entries(omim_json)
+    records = load_omim_entries(omim_json)
     hierarchy = load_mesh_hierarchy(mesh_hierarchy_json)
-    children  = build_children_map(hierarchy)
-    vocab     = set(hierarchy.keys())
-    D         = len(diseases)
+    children = build_children_map(hierarchy)
+    vocab = set(hierarchy.keys())
+    D = len(diseases)
 
     # Steps 1-2: raw and hierarchy-refined counts
     term_doc_freq = defaultdict(int)
     refined_counts = {}
     for mim in diseases:
         entry = records.get(str(mim), {})
-        text  = (entry.get("TX", "") + " " + entry.get("CS", "")).upper()
-        raw   = defaultdict(int)
+        text = (entry.get("TX", "") + " " + entry.get("CS", "")).upper()
+        raw = defaultdict(int)
         for t in extract_mesh_terms(text, vocab):
             raw[t] += 1
 
@@ -209,13 +223,15 @@ def construct_disease_disease_matrix(
                 term_doc_freq[term] += 1
 
     # Step 3: IDF
-    idf   = {t: np.log(D / df) for t, df in term_doc_freq.items()}
+    idf = {t: np.log(D / df) for t, df in term_doc_freq.items()}
     terms = sorted(idf)
 
     # Step 4: construct TF×IDF matrix
     rows, cols, data = [], [], []
     for i, mim in enumerate(diseases):
-        vec = np.array([refined_counts[mim].get(t, 0) * idf[t] for t in terms], dtype=float)
+        vec = np.array(
+            [refined_counts[mim].get(t, 0) * idf[t] for t in terms], dtype=float
+        )
         norm = np.linalg.norm(vec)
         if norm:
             vec /= norm

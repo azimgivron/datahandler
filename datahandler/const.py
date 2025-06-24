@@ -12,4 +12,8 @@ Prioritizing candidate disease genes by network-based boosting of genome-wide as
 Insuk Lee, U. Martin Blom, Peggy I. Wang, Jung Eun Shin, and Edward M. Marcotte
 Genome Research 21(7):1109-21 (2011)
 """
-GENE_GENE_SIMILARITY_URL: str = "http://www.functionalnet.org/humannet/HumanNet.v1.join.txt"
+GENE_GENE_SIMILARITY_URL: str = (
+    "http://www.functionalnet.org/humannet/HumanNet.v1.join.txt"
+)
+MESH_URL: str = "https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/"
+OMIM_URL: str = "https://data.omim.org/downloads/"

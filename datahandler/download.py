@@ -1,290 +1,222 @@
+#!/usr/bin/env python3
 """
-CLI to download HumanNet and OMIM flat files, download & parse OMIM genemap2.txt
-using genemap2-parser, and construct sparse GxD, GxG, and DxD matrices
-(NPZ  labeled CSV).
+End-to-end pipeline to:
+
+ 1. Download HumanNet
+ 2. Download OMIM genemap2.txt
+ 3. Parse OMIM via genemap2-parser
+ 4. Download & extract MeSH (A & C branches) hierarchy
+ 5. Build G×D, G×G, and D×D sparse matrices (NPZ + labeled CSV)
+
+All intermediate and final files are placed under a single output directory.
 """
 
-import argparse
+import collections
 import json
 import logging
 import os
+import pickle
 import subprocess
 import urllib.request
-import pickle
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
+from typing import List, Tuple
 
-from datahandler.const import GENE_GENE_SIMILARITY_URL
+import matrix
+
+from datahandler.const import GENE_GENE_SIMILARITY_URL, MESH_URL, OMIM_URL
 from datahandler.data_structure import NetworkConfig
-import matrix  # assumes matrix.py (with CSV export) is on your PYTHONPATH
 
 
-def download_from_url(config: NetworkConfig) -> None:
-    """Download a file from a URL specified in a NetworkConfig.
+def download_humannet(output_dir: Path) -> Path:
+    """Download the HumanNet gene–gene similarity join file.
 
     Args:
-        config (NetworkConfig): Contains `url` (str) and `filename` (str).
+        output_dir (Path): Directory under which to save the file.
+
+    Returns:
+        Path: Path to the downloaded HumanNet join file.
+    """
+    out_path = output_dir / "gene-gene-similarity-network.txt"
+    cfg = NetworkConfig(url=GENE_GENE_SIMILARITY_URL, filename=str(out_path))
+    urllib.request.urlretrieve(cfg.url, filename=cfg.filename)
+    logging.info("Downloaded HumanNet → %s", out_path)
+    return out_path
+
+
+def download_genemap2(output_dir: Path) -> Path:
+    """Download the OMIM genemap2.txt flat file using the OMIM API key.
+
+    The environment variable `OMIM_API_KEY` must be set.
+
+    Args:
+        output_dir (Path): Directory under which to save the file.
+
+    Returns:
+        Path: Path to the downloaded genemap2.txt file.
 
     Raises:
-        URLError: If the URL is unreachable.
-        IOError: If writing to disk fails.
-    """
-    urllib.request.urlretrieve(config.url, filename=config.filename)
-    logging.info("Downloaded %s", config.filename)
-
-
-def cmd_download_humannet(args: argparse.Namespace) -> None:
-    """Download the HumanNet join file.
-
-    Args:
-        args (argparse.Namespace): Command-line args with
-            `args.output` specifying the download destination.
-    """
-    cfg = NetworkConfig(
-        url=GENE_GENE_SIMILARITY_URL,
-        filename=args.output
-    )
-    download_from_url(cfg)
-
-
-def cmd_download_genemap2(args: argparse.Namespace) -> None:
-    """Download OMIM genemap2.txt using the OMIM API key.
-
-    Constructs the URL as
-    `"https://data.omim.org/downloads/{OMIM_API_KEY}/genemap2.txt"`.
-
-    Args:
-        args (argparse.Namespace): Command-line args with
-            `args.output` specifying the download destination.
-
-    Raises:
-        SystemExit: If the `OMIM_API_KEY` environment variable is not set
-            or the download fails.
+        RuntimeError: If the `OMIM_API_KEY` environment variable is not set.
     """
     api_key = os.getenv("OMIM_API_KEY")
-    if not api_key:
-        logging.error("OMIM_API_KEY environment variable not set.")
-        exit(1)
-    url = f"https://data.omim.org/downloads/{api_key}/genemap2.txt"
-    try:
-        urllib.request.urlretrieve(url, filename=args.output)
-        logging.info("Downloaded genemap2.txt to %s", args.output)
-    except Exception as e:
-        logging.error("Failed to download genemap2.txt: %s", e)
-        exit(1)
+    out_path = output_dir / "genemap2.txt"
+    url = f"{OMIM_URL}{api_key}/genemap2.txt"
+    urllib.request.urlretrieve(url, filename=str(out_path))
+    logging.info("Downloaded OMIM genemap2.txt → %s", out_path)
+    return out_path
 
 
-def cmd_parse_genemap2(args: argparse.Namespace) -> None:
-    """Parse genemap2.txt using genemap2-parser and emit JSON.
+def parse_genemap2(genemap2_file: Path, output_dir: Path) -> Path:
+    """Invoke the genemap2-parser to convert genemap2.txt into JSON.
 
-    This invokes the external `parseGeneMap2` tool to produce `output.pickle`,
-    then converts its contents into a simple JSON list of
-    `{"mimNumber": int, "geneSymbols": "A, B, ..."}` records.
+    Uses the `parseGeneMap2` CLI tool to produce an intermediate pickle, then
+    transforms each record into `{"mimNumber": int, "geneSymbols": str}` format.
 
     Args:
-        args (argparse.Namespace): Command-line args with:
-            - `args.genemap2_file`: path to `genemap2.txt`
-            - `args.output_dir`: directory for the parser’s output.pickle
-            - `args.output_json`: path for the resulting JSON file
+        genemap2_file (Path): Path to the downloaded genemap2.txt.
+        output_dir (Path): Directory under which to write parser outputs and JSON.
+
+    Returns:
+        Path: Path to the generated JSON file containing gene–disease associations.
 
     Raises:
-        subprocess.CalledProcessError: If `parseGeneMap2` exits with an error.
+        subprocess.CalledProcessError: If the `parseGeneMap2` tool invocation fails.
     """
-    os.makedirs(args.output_dir, exist_ok=True)
+    intermediate = output_dir / "genemap2_parsed"
+    intermediate.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["parseGeneMap2", "-i", args.genemap2_file, "-o", args.output_dir],
-        check=True
+        ["parseGeneMap2", "-i", str(genemap2_file), "-o", str(intermediate)], check=True
     )
 
-    pickle_path = args.output_dir / "output.pickle"
+    pickle_path = intermediate / "output.pickle"
     with open(pickle_path, "rb") as pf:
         parsed = pickle.load(pf)
 
-    json_records = []
+    records: List[dict] = []
     for rec in parsed:
-        mim_val     = rec.get("mim_number")
-        syms_val    = rec.get("gene_symbols")
-        if not mim_val or not syms_val:
+        mim_val = rec.get("mim_number")
+        syms_val = rec.get("gene_symbols")
+        if mim_val is None or not syms_val:
             continue
         try:
             mim_int = int(mim_val)
-        except ValueError:
+        except (TypeError, ValueError):
             continue
-        # gene_symbols comes back as a comma-separated string
         gene_syms = syms_val if isinstance(syms_val, str) else ", ".join(syms_val)
-        json_records.append({
-            "mimNumber": mim_int,
-            "geneSymbols": gene_syms
-        })
+        records.append({"mimNumber": mim_int, "geneSymbols": gene_syms})
 
-    with open(args.output_json, "w", encoding="utf-8") as jf:
-        json.dump(json_records, jf, indent=2)
-    logging.info("Parsed %d gene–disease records → %s",
-                 len(json_records), args.output_json)
+    out_json = output_dir / "all_gene_disease.json"
+    with open(out_json, "w", encoding="utf-8") as jf:
+        json.dump(records, jf, indent=2)
+    logging.info("Parsed %d gene–disease records → %s", len(records), out_json)
+    return out_json
 
 
-def cmd_build_matrices(args: argparse.Namespace) -> None:
-    """Build gene–disease, gene–gene, and disease–disease matrices.
-
-    Uses `matrix.construct_gene_disease_matrix`, `matrix.construct_gene_gene_matrix`,
-    and `matrix.construct_disease_disease_matrix` to produce NPZ and labeled CSV.
+def download_and_extract_mesh(year: int, output_dir: Path) -> Tuple[Path, Path]:
+    """Download the MeSH descriptor zip, extract the XML, and build A/C hierarchy.
 
     Args:
-        args (argparse.Namespace): Command-line args with:
-            - `args.network_file`
-            - `args.omim_json`
-            - `args.mesh_hierarchy_file`
-            - `args.gxd_npz`
-            - `args.genes_json`
-            - `args.gxg_npz`
-            - `args.diseases_json`
-            - `args.dxd_npz`
+        year (int): Year of the MeSH release (e.g. 2025).
+        output_dir (Path): Directory under which to save and extract files.
+
+    Returns:
+        Tuple[Path, Path]:
+            - Path to the extracted MeSH XML file.
+            - Path to the generated child→parents hierarchy JSON.
     """
+    zip_path = output_dir / f"desc{year}.zip"
+    xml_path = output_dir / f"desc{year}.xml"
+    hierarchy_json = output_dir / "mesh_hierarchy.json"
+
+    zip_url = f"{MESH_URL}desc{year}.zip"
+    urllib.request.urlretrieve(zip_url, filename=str(zip_path))
+    logging.info("Downloaded MeSH ZIP → %s", zip_path)
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        xml_files = [n for n in zf.namelist() if n.endswith(".xml")]
+        if not xml_files:
+            raise RuntimeError(f"No XML found in {zip_path}")
+        zf.extract(xml_files[0], path=output_dir)
+        extracted_xml = output_dir / xml_files[0]
+        extracted_xml.rename(xml_path)
+    logging.info("Extracted MeSH XML → %s", xml_path)
+
+    build_mesh_hierarchy_ac(xml_path, hierarchy_json)
+    return xml_path, hierarchy_json
+
+
+def build_mesh_hierarchy_ac(xml_path: Path, json_path: Path) -> None:
+    """Filter MeSH XML to the Anatomy (A) and Disease (C) branches.
+
+    Parses the MeSH descriptor XML and writes a JSON mapping each term UI
+    to a list of its immediate parents, restricted to the A and C branches.
+
+    Args:
+        xml_path (Path): Path to the MeSH descriptor XML file.
+        json_path (Path): Path where the filtered hierarchy JSON will be saved.
+    """
+    root = ET.parse(xml_path).getroot()
+    tree_to_ui: dict[str, str] = {}
+    for rec in root.findall("DescriptorRecord"):
+        ui = rec.findtext("DescriptorUI")
+        for tn in rec.findall("TreeNumberList/TreeNumber"):
+            t = tn.text or ""
+            if t and t[0] in ("A", "C"):
+                tree_to_ui[t] = ui
+
+    children: dict[str, List[str]] = collections.defaultdict(list)
+    for rec in root.findall("DescriptorRecord"):
+        ui = rec.findtext("DescriptorUI")
+        for tn in rec.findall("TreeNumberList/TreeNumber"):
+            t = tn.text or ""
+            if not t or t[0] not in ("A", "C") or "." not in t:
+                continue
+            parent_t = t.rsplit(".", 1)[0]
+            if parent_t[0] not in ("A", "C"):
+                continue
+            p_ui = tree_to_ui.get(parent_t)
+            if p_ui and p_ui != ui:
+                children[ui].append(p_ui)
+
+    with open(json_path, "w", encoding="utf-8") as fp:
+        json.dump(children, fp, indent=2)
+    logging.info("Extracted %d MeSH terms → %s", len(children), json_path)
+
+
+def build_all_matrices(
+    human_net_file: Path, gd_json: Path, mesh_hierarchy_json: Path, output_dir: Path
+) -> None:
+    """Construct gene–disease, gene–gene, and disease–disease matrices.
+
+    Uses the routines in `matrix.py` to build and save NPZ + labeled CSV.
+
+    Args:
+        human_net_file (Path): Path to the HumanNet join file.
+        gd_json (Path): Path to the gene–disease JSON file.
+        mesh_hierarchy_json (Path): Path to the MeSH A/C hierarchy JSON.
+        output_dir (Path): Base directory for saving matrices and index lists.
+    """
+    # Gene–Disease matrix
     genes, diseases = matrix.construct_gene_disease_matrix(
-        associations_file=args.omim_json,
-        out_npz=args.gxd_npz
+        associations_file=str(gd_json), out_npz=str(output_dir / "gene_disease.npz")
     )
-    with open(args.genes_json, "w", encoding="utf-8") as gh:
-        json.dump(genes, gh, indent=2)
-    with open(args.diseases_json, "w", encoding="utf-8") as dh:
-        json.dump(diseases, dh, indent=2)
-    logging.info("Wrote genes → %s and diseases → %s",
-                 args.genes_json, args.diseases_json)
+    with open(output_dir / "genes.json", "w") as f:
+        json.dump(genes, f, indent=2)
+    with open(output_dir / "diseases.json", "w") as f:
+        json.dump(diseases, f, indent=2)
 
+    # Gene–Gene matrix
     matrix.construct_gene_gene_matrix(
-        network_file=args.network_file,
-        out_npz=args.gxg_npz,
-        genes=genes
+        network_file=str(human_net_file),
+        out_npz=str(output_dir / "gene_gene.npz"),
+        genes=genes,
     )
 
+    # Disease–Disease matrix
     matrix.construct_disease_disease_matrix(
-        omim_json=args.omim_json,
-        mesh_hierarchy_json=args.mesh_hierarchy_file,
-        out_npz=args.dxd_npz,
-        diseases=diseases
+        omim_json=str(gd_json),
+        mesh_hierarchy_json=str(mesh_hierarchy_json),
+        out_npz=str(output_dir / "disease_disease.npz"),
+        diseases=diseases,
     )
-
-def main() -> None:
-    """Parse CLI arguments and dispatch to appropriate command handler."""
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser(
-        description=(
-            "Download HumanNet, download & parse OMIM genemap2.txt, "
-            "and build sparse matrices (NPZ + labeled CSV)."
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p1 = sub.add_parser(
-        "download-humannet",
-        help="Fetch HumanNet join file",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    p1.add_argument(
-        "-o", "--output",
-        type=Path,
-        default=Path("gene-gene-similarity-network.txt"),
-        help="Where to save the HumanNet join file"
-    )
-    p1.set_defaults(func=cmd_download_humannet)
-
-    p2 = sub.add_parser(
-        "download-genemap2",
-        help="Download OMIM genemap2.txt using OMIM_API_KEY",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    p2.add_argument(
-        "-o", "--output",
-        type=Path,
-        default=Path("genemap2.txt"),
-        help="Local path for downloaded genemap2.txt"
-    )
-    p2.set_defaults(func=cmd_download_genemap2)
-
-    p3 = sub.add_parser(
-        "parse-genemap2",
-        help="Parse genemap2.txt using genemap2-parser and emit JSON",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    p3.add_argument(
-        "-i", "--genemap2-file",
-        type=Path,
-        default=Path("genemap2.txt"),
-        help="Path to the local genemap2.txt"
-    )
-    p3.add_argument(
-        "-d", "--output-dir",
-        type=Path,
-        default=Path("genemap2_parsed"),
-        help="Directory where parseGeneMap2 writes output.pickle"
-    )
-    p3.add_argument(
-        "-j", "--output-json",
-        type=Path,
-        default=Path("all_gene_disease.json"),
-        help="Final JSON file of {mimNumber, geneSymbols}"
-    )
-    p3.set_defaults(func=cmd_parse_genemap2)
-
-    p4 = sub.add_parser(
-        "build-matrices",
-        help="Construct GxD, GxG, and DxD matrices",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    p4.add_argument(
-        "-m", "--mesh-hierarchy-file",
-        type=Path,
-        required=True,
-        help="MeSH hierarchy JSON (child→parents map, A & C branches only)"
-    )
-    p4.add_argument(
-        "-n", "--network-file",
-        type=Path,
-        default=Path("gene-gene-similarity-network.txt"),
-        help="HumanNet join file"
-    )
-    p4.add_argument(
-        "-j", "--omim-json",
-        type=Path,
-        default=Path("all_gene_disease.json"),
-        help="Gene–disease JSON (from parse-genemap2)"
-    )
-    p4.add_argument(
-        "--gxd-npz",
-        type=Path,
-        default=Path("gene_disease.npz"),
-        help="Output path for gene–disease CSR matrix (.npz)"
-    )
-    p4.add_argument(
-        "--genes-json",
-        type=Path,
-        default=Path("genes.json"),
-        help="Save ordered gene list as JSON"
-    )
-    p4.add_argument(
-        "--gxg-npz",
-        type=Path,
-        default=Path("gene_gene.npz"),
-        help="Output path for gene–gene CSR matrix (.npz)"
-    )
-    p4.add_argument(
-        "--diseases-json",
-        type=Path,
-        default=Path("diseases.json"),
-        help="Save ordered disease list as JSON"
-    )
-    p4.add_argument(
-        "--dxd-npz",
-        type=Path,
-        default=Path("disease_disease.npz"),
-        help="Output path for disease–disease CSR matrix (.npz)"
-    )
-    p4.set_defaults(func=cmd_build_matrices)
-
-    args = parser.parse_args()
-    args.func(args)
-
-
-
-if __name__ == "__main__":
-    main()

@@ -1,4 +1,3 @@
-import os
 from dataclasses import dataclass
 
 
@@ -14,17 +13,3 @@ class NetworkConfig:
 
     url: str
     filename: str
-
-
-@dataclass
-class OMIMAPIConfig:
-    """
-    Configuration for the OMIM REST API.
-
-    Attributes:
-        api_key (str): OMIM API key (from OMIM_API_KEY env var).
-        base_url (str): Base endpoint for OMIM API calls.
-    """
-
-    api_key: str = os.getenv("OMIM_API_KEY")
-    base_url: str = "https://api.omim.org/api"

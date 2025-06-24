@@ -25,7 +25,7 @@ from typing import List, Tuple
 
 import matrix
 
-from datahandler.const import GENE_GENE_SIMILARITY_URL, MESH_URL, OMIM_URL
+from datahandler.const import GENE_GENE_SIMILARITY_URL, MESH_URL, OMIM_URL, API_KEY
 from datahandler.data_structure import NetworkConfig
 
 
@@ -48,7 +48,7 @@ def download_humannet(output_dir: Path) -> Path:
 def download_genemap2(output_dir: Path) -> Path:
     """Download the OMIM genemap2.txt flat file using the OMIM API key.
 
-    The environment variable `OMIM_API_KEY` must be set.
+    The environment variable API_KEY must be set.
 
     Args:
         output_dir (Path): Directory under which to save the file.
@@ -57,9 +57,9 @@ def download_genemap2(output_dir: Path) -> Path:
         Path: Path to the downloaded genemap2.txt file.
 
     Raises:
-        RuntimeError: If the `OMIM_API_KEY` environment variable is not set.
+        RuntimeError: If the API_KEY environment variable is not set.
     """
-    api_key = os.getenv("OMIM_API_KEY")
+    api_key = os.getenv(API_KEY)
     out_path = output_dir / "genemap2.txt"
     url = f"{OMIM_URL}{api_key}/genemap2.txt"
     urllib.request.urlretrieve(url, filename=str(out_path))

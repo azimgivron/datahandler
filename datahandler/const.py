@@ -17,3 +17,4 @@ GENE_GENE_SIMILARITY_URL: str = (
 )
 MESH_URL: str = "https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/"
 OMIM_URL: str = "https://data.omim.org/downloads/"
+API_KEY: str = "OMIM_API_KEY"

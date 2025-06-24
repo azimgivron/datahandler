@@ -21,10 +21,11 @@ def main() -> None:
     root_logger.setLevel(logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter(
-        fmt="%(asctime)s DataHandler: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s DataHandler: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
+    )
     root_logger.addHandler(handler)
 
     parser = argparse.ArgumentParser(

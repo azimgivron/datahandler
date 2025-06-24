@@ -10,15 +10,20 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 requires-python = ">=3.11"
-dynamic = ["version", "dependencies"]
+version = "0.1.0"
 
-[tool.setuptools]
-packages = [
-    "datahandler",
+# runtime dependencies
+dependencies = [
+    "requests>=2.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.2",
+    "genemap2-parser @ git+https://github.com/azimgivron/genemap2-parser.git",
 ]
 
-[tool.setuptools.dynamic]
-dependencies = { file = "requirements.txt" }
+[tool.setuptools]
+packages = ["datahandler"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

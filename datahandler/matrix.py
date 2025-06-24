@@ -99,7 +99,7 @@ def construct_gene_gene_matrix(network_file: str, out_npz: str, genes):
     Returns:
       genes: passed through for consistency
     """
-    idx_g = {g: i for i, g in enumerate(genes)}
+    idx_g = {entrez_id: i for i, entrez_id in enumerate(genes)}
     G = len(genes)
 
     rows, cols, data = [], [], []
@@ -108,11 +108,11 @@ def construct_gene_gene_matrix(network_file: str, out_npz: str, genes):
             parts = raw_line.strip().split()
             if len(parts) < 3:
                 continue
-            g1, g2, w = (
-                parts[0],
-                parts[1],
-                float(parts[2]) if parts[2] != "NA" else np.nan,
-            )
+            g1, g2 = parts[0], parts[1]
+            w_str = parts[-1]   # IntNet is the last column
+            if w_str == "NA":
+                continue
+            w = float(w_str)
             if g1 in idx_g and g2 in idx_g:
                 i, j = idx_g[g1], idx_g[g2]
                 rows.append(i)
